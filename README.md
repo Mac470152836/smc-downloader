@@ -12,9 +12,20 @@ Tauri 2 + React 桌面下载工具，支持断点续传，配合 SMC Packaging R
 
 ## 前提条件
 
+### 通用
+
 - [Rust](https://rustup.rs/) (stable)
-- Node.js 18+ ([nvm](https://github.com/nvm-sh/nvm) 推荐)
-- Tauri 2 CLI: `npm install -D @tauri-apps/cli`
+- Node.js 18+（[nvm](https://github.com/nvm-sh/nvm) 推荐）
+- Tauri 2 CLI（随 npm 依赖安装）
+
+### macOS 额外要求
+
+- Xcode Command Line Tools: `xcode-select --install`
+
+### Windows 额外要求
+
+- [Microsoft Visual C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)（含 C++ 桌面开发工作负载）
+- [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/)（Windows 11 预装，Windows 10 需手动安装）
 
 ## 开发
 
@@ -24,15 +35,22 @@ npm install
 npm run tauri dev
 ```
 
-## 构建
+## 打包
+
+详细的 macOS 和 Windows 打包步骤见 [BUILD.md](./BUILD.md)。
+
+快速构建：
 
 ```bash
-npm run tauri build
+npm install
+npm run tauri build          # 当前平台打包
 ```
 
-产物在 `src-tauri/target/release/bundle/`：
-- macOS: `.dmg` / `.app`
-- Windows: `.msi` / `.exe`
+- macOS 产物：`src-tauri/target/release/bundle/dmg/*.dmg`
+- Windows 产物：`src-tauri/target/release/bundle/msi/*.msi`、`nsis/*.exe`
+- Windows 也可通过 GitHub Actions 自动构建：`git tag v0.1.0 && git push origin v0.1.0`
+
+> 完整的环境安装、签名公证、通用二进制、常见问题等见 [BUILD.md](./BUILD.md)。
 
 ## 使用
 
@@ -47,7 +65,7 @@ npm run tauri build
 
 ```
 首次下载:
-  HEAD 请求获取 Content-Length
+  GET 请求获取 Content-Length
   → 创建 .meta.json (记录 url / token / filename / total_size)
   → 创建 .part 文件，流式写入
 
