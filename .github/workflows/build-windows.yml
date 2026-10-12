@@ -83,13 +83,16 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${GITHUB_REF##*/}"
+          # Flatten all artifact files into a single directory for upload
+          mkdir -p release-assets
+          find artifacts -type f -exec cp {} release-assets/ \;
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists, uploading assets..."
-            gh release upload "$TAG" artifacts/**/* --clobber
+            gh release upload "$TAG" release-assets/* --clobber
           else
             echo "Creating release $TAG..."
             gh release create "$TAG" \
               --title "SMC Downloader $TAG" \
               --notes "macOS DMG and Windows installer for SMC Downloader $TAG" \
-              artifacts/**/*
+              release-assets/*
           fi
