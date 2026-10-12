@@ -16,6 +16,7 @@ interface DownloadInfo {
   status: string;
   error: string | null;
   created_at: string;
+  file_missing: boolean;
 }
 
 interface ProgressEvent {
@@ -43,6 +44,17 @@ function formatSpeed(bytesPerSec: number): string {
   return `${formatBytes(bytesPerSec)}/s`;
 }
 
+function parseClipboard(text: string): { url: string; token: string } | null {
+  const trimmed = text.trim();
+  const headerRe = /(?:--header|-H)\s*=\s*["']Authorization:\s*([^"']+)["']/;
+  const headerMatch = trimmed.match(headerRe);
+  if (!headerMatch) return null;
+  const urlRe = /(https?:\/\/[^\s'"<>]+)/g;
+  const urls = trimmed.match(urlRe);
+  if (!urls || urls.length === 0) return null;
+  return { token: headerMatch[1].trim(), url: urls[urls.length - 1] };
+}
+
 export default function App() {
   const [url, setUrl] = useState("");
   const [token, setToken] = useState("");
@@ -50,6 +62,7 @@ export default function App() {
   const [downloads, setDownloads] = useState<DownloadInfo[]>([]);
   const [speedMap, setSpeedMap] = useState<Record<string, number>>({});
   const [starting, setStarting] = useState(false);
+  const [showTips, setShowTips] = useState(false);
 
   useEffect(() => {
     invoke<string>("get_default_download_dir").then(setSaveDir).catch(() => {});
@@ -98,6 +111,16 @@ export default function App() {
   const handleBrowse = async () => {
     const selected = await open({ directory: true, title: "选择保存目录" });
     if (selected) setSaveDir(selected as string);
+  };
+
+  const handleUrlPaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+    const pasted = e.clipboardData.getData("text");
+    const parsed = parseClipboard(pasted);
+    if (parsed) {
+      e.preventDefault();
+      setUrl(parsed.url);
+      setToken(parsed.token);
+    }
   };
 
   const handleStart = async () => {
@@ -155,22 +178,70 @@ export default function App() {
     });
   };
 
+  const handleRedownload = async (id: string) => {
+    try {
+      const info = await invoke<DownloadInfo>("redownload_download", { id });
+      setDownloads((prev) =>
+        prev.map((d) =>
+          d.id === id
+            ? { ...d, downloaded: 0, total_size: 0, status: "downloading", error: null }
+            : d
+        )
+      );
+    } catch (e) {
+      alert(String(e));
+    }
+  };
+
+  const handleOpenDir = async (saveDir: string, filename: string) => {
+    try {
+      await invoke("open_download_dir", { saveDir, filename });
+    } catch (e) {
+      alert(String(e));
+    }
+  };
+
   return (
     <div className="app">
       <div className="header">
         <span className="logo">📦</span>
         <span>SMC 下载器</span>
+        <button className="tips-btn" onClick={() => setShowTips((v) => !v)}>
+          💡 使用技巧
+        </button>
       </div>
+
+      {showTips && (
+        <div className="tips-panel">
+          <div className="tips-panel-header">
+            <span>💡 使用技巧</span>
+            <button className="tips-close" onClick={() => setShowTips(false)}>✕</button>
+          </div>
+          <p className="tips-desc">
+            直接将 <code>wget</code> 或 <code>curl</code> 下载命令粘贴到「下载链接」输入框，应用会自动解析并填充下载地址和 Token，无需手动拆分。
+          </p>
+          <div className="tips-example">
+            <div className="tips-label">支持格式一（wget）：</div>
+            <pre className="tips-code">wget --header="Authorization: 9a572070d7464c98b0ac4c473af59cc22f7880aca7654529a5d023fd6593c203" http://47.92.201.211:99/20260423-上海合合doris-202610121101.tar.gz</pre>
+          </div>
+          <div className="tips-example">
+            <div className="tips-label">支持格式二（curl）：</div>
+            <pre className="tips-code">curl -O -H "Authorization: 9a572070d7464c98b0ac4c473af59cc22f7880aca7654529a5d023fd6593c203" http://47.92.201.211:99/20260423-上海合合doris-202610121101.tar.gz</pre>
+          </div>
+          <p className="tips-hint">将以上命令完整复制后，粘贴到下载链接输入框即可自动识别。</p>
+        </div>
+      )}
 
       <div className="form-section">
         <div className="form-row">
           <label>下载链接</label>
-          <input
-            type="text"
-            placeholder="http://47.92.201.211:99/xxx.tar.gz"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-          />
+         <input
+           type="text"
+           placeholder="http://47.92.201.211:99/xxx.tar.gz"
+           value={url}
+           onChange={(e) => setUrl(e.target.value)}
+           onPaste={handleUrlPaste}
+         />
         </div>
         <div className="form-row">
           <label>Token</label>
@@ -215,9 +286,11 @@ export default function App() {
               speed={speedMap[d.id] || 0}
               onPause={handlePause}
               onResume={handleResume}
-              onCancel={handleCancel}
-              onRemove={handleRemove}
-              formatBytes={formatBytes}
+           onCancel={handleCancel}
+             onRemove={handleRemove}
+             onOpenDir={handleOpenDir}
+             onRedownload={handleRedownload}
+            formatBytes={formatBytes}
               formatSpeed={formatSpeed}
             />
           ))

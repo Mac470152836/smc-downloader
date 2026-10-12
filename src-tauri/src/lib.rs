@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
@@ -32,6 +32,8 @@ pub struct DownloadInfo {
     status: String,
     error: Option<String>,
     created_at: String,
+    #[serde(default)]
+    file_missing: bool,
 }
 
 struct DownloadEntry {
@@ -81,6 +83,20 @@ fn emit_status(app: &AppHandle, id: &str, status: &str, error: Option<&str>) {
     }));
 }
 
+fn persist_file_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("smc-downloader").join("downloads.json"))
+}
+
+async fn persist_downloads(mgr: &DownloadManager) {
+    let path = match persist_file_path() { Some(p) => p, None => return };
+    let infos: Vec<DownloadInfo> = {
+        let d = mgr.downloads.lock().await;
+        d.values().map(|e| e.info.clone()).collect()
+    };
+    if let Some(parent) = path.parent() { let _ = fs::create_dir_all(parent).await; }
+    let _ = fs::write(&path, serde_json::to_string_pretty(&infos).unwrap_or_default()).await;
+}
+
 async fn download_worker(app: AppHandle, mgr: DownloadManager, id: String) {
     println!("[{}] worker started", id);
     let (info, cancel_flag) = {
@@ -108,6 +124,7 @@ async fn download_worker(app: AppHandle, mgr: DownloadManager, id: String) {
           if let Some(e) = d.get_mut(&id) { e.info.status = "completed".into(); e.info.total_size = file_len; e.info.downloaded = file_len; } }
         emit_progress(&app, &id, file_len, file_len, 0);
         emit_status(&app, &id, "completed", None);
+        persist_downloads(&mgr).await;
         return;
     }
 
@@ -117,11 +134,11 @@ async fn download_worker(app: AppHandle, mgr: DownloadManager, id: String) {
         println!("[{}] resuming from .meta + .part", id);
         let meta_str = match fs::read_to_string(&meta_file).await {
             Ok(s) => s,
-            Err(e) => { let m = e.to_string(); set_status(&mgr, &id, "error", Some(m.clone()), 0).await; emit_status(&app, &id, "error", Some(&m)); return; }
+            Err(e) => { let m = e.to_string(); set_status(&mgr, &id, "error", Some(m.clone()), 0).await; emit_status(&app, &id, "error", Some(&m)); persist_downloads(&mgr).await; return; }
         };
         let meta: DownloadMeta = match serde_json::from_str(&meta_str) {
             Ok(m) => m,
-            Err(e) => { let m = e.to_string(); set_status(&mgr, &id, "error", Some(m.clone()), 0).await; emit_status(&app, &id, "error", Some(&m)); return; }
+            Err(e) => { let m = e.to_string(); set_status(&mgr, &id, "error", Some(m.clone()), 0).await; emit_status(&app, &id, "error", Some(&m)); persist_downloads(&mgr).await; return; }
         };
         total_size = meta.total_size;
         resume_offset = fs::metadata(&part_file).await.map(|m| m.len()).unwrap_or(0);
@@ -137,7 +154,7 @@ async fn download_worker(app: AppHandle, mgr: DownloadManager, id: String) {
 
     let resp = match req.send().await {
         Ok(r) => { println!("[{}] HTTP {}", id, r.status()); r }
-        Err(e) => { let m = e.to_string(); set_status(&mgr, &id, "error", Some(m.clone()), 0).await; emit_status(&app, &id, "error", Some(&m)); return; }
+        Err(e) => { let m = e.to_string(); set_status(&mgr, &id, "error", Some(m.clone()), 0).await; emit_status(&app, &id, "error", Some(&m)); persist_downloads(&mgr).await; return; }
     };
 
     let sc = resp.status();
@@ -146,6 +163,7 @@ async fn download_worker(app: AppHandle, mgr: DownloadManager, id: String) {
         println!("[{}] error: {}", id, msg);
         set_status(&mgr, &id, "error", Some(msg.clone()), 0).await;
         emit_status(&app, &id, "error", Some(&msg));
+        persist_downloads(&mgr).await;
         return;
     }
 
@@ -179,7 +197,7 @@ async fn download_worker(app: AppHandle, mgr: DownloadManager, id: String) {
     };
     let mut file = match file {
         Ok(f) => f,
-        Err(e) => { let m = e.to_string(); set_status(&mgr, &id, "error", Some(m.clone()), current).await; emit_status(&app, &id, "error", Some(&m)); return; }
+        Err(e) => { let m = e.to_string(); set_status(&mgr, &id, "error", Some(m.clone()), current).await; emit_status(&app, &id, "error", Some(&m)); persist_downloads(&mgr).await; return; }
     };
 
     let mut stream = resp.bytes_stream();
@@ -192,15 +210,17 @@ async fn download_worker(app: AppHandle, mgr: DownloadManager, id: String) {
             let _ = file.flush().await;
             set_status(&mgr, &id, "paused", None, current).await;
             emit_status(&app, &id, "paused", None);
+            persist_downloads(&mgr).await;
             return;
         }
         let chunk = match chunk_result {
             Ok(c) => c,
-            Err(e) => { let _ = file.flush().await; let m = e.to_string(); set_status(&mgr, &id, "error", Some(m.clone()), current).await; emit_status(&app, &id, "error", Some(&m)); return; }
+            Err(e) => { let _ = file.flush().await; let m = e.to_string(); set_status(&mgr, &id, "error", Some(m.clone()), current).await; emit_status(&app, &id, "error", Some(&m)); persist_downloads(&mgr).await; return; }
         };
         if file.write_all(&chunk).await.is_err() {
             set_status(&mgr, &id, "error", Some("write failed".into()), current).await;
             emit_status(&app, &id, "error", Some("write failed"));
+            persist_downloads(&mgr).await;
             return;
         }
         current += chunk.len() as u64;
@@ -224,9 +244,11 @@ async fn download_worker(app: AppHandle, mgr: DownloadManager, id: String) {
         { let mut d = mgr.downloads.lock().await; if let Some(e) = d.get_mut(&id) { e.info.status = "completed".into(); e.info.downloaded = current; } }
         emit_progress(&app, &id, current, total_size, 0);
         emit_status(&app, &id, "completed", None);
+        persist_downloads(&mgr).await;
     } else {
         set_status(&mgr, &id, "paused", None, current).await;
         emit_status(&app, &id, "paused", None);
+        persist_downloads(&mgr).await;
     }
 }
 
@@ -239,13 +261,14 @@ async fn set_status(mgr: &DownloadManager, id: &str, status: &str, error: Option
 async fn start_download(app: AppHandle, mgr: State<'_, DownloadManager>, url: String, token: String, save_dir: String, filename: Option<String>) -> Result<DownloadInfo, String> {
     let id = Uuid::new_v4().to_string()[..8].to_string();
     let fname = filename.unwrap_or_else(|| filename_from_url(&url));
-    let info = DownloadInfo { id: id.clone(), url: url.clone(), token: token.clone(), filename: fname, save_dir: save_dir.clone(), total_size: 0, downloaded: 0, status: "downloading".into(), error: None, created_at: chrono::Utc::now().to_rfc3339() };
+    let info = DownloadInfo { id: id.clone(), url: url.clone(), token: token.clone(), filename: fname, save_dir: save_dir.clone(), total_size: 0, downloaded: 0, status: "downloading".into(), error: None, created_at: chrono::Utc::now().to_rfc3339(), file_missing: false };
     let cancel_flag = Arc::new(AtomicBool::new(false));
     let mgr_clone = mgr.inner().clone();
     { let mut d = mgr.downloads.lock().await; d.insert(id.clone(), DownloadEntry { info: info.clone(), cancel_flag, task: None }); }
     let app_c = app.clone(); let id_c = id.clone();
     let task = tokio::spawn(async move { download_worker(app_c, mgr_clone, id_c).await; });
     { let mut d = mgr.downloads.lock().await; if let Some(e) = d.get_mut(&id) { e.task = Some(task); } }
+    persist_downloads(&mgr.inner()).await;
     Ok(info)
 }
 
@@ -253,6 +276,7 @@ async fn start_download(app: AppHandle, mgr: State<'_, DownloadManager>, url: St
 async fn pause_download(id: String, mgr: State<'_, DownloadManager>) -> Result<(), String> {
     let task = { let mut d = mgr.downloads.lock().await; if let Some(e) = d.get_mut(&id) { e.cancel_flag.store(true, Ordering::Relaxed); e.task.take() } else { None } };
     if let Some(t) = task { let _ = tokio::time::timeout(Duration::from_secs(5), t).await; }
+    persist_downloads(&mgr.inner()).await;
     Ok(())
 }
 
@@ -270,6 +294,7 @@ async fn resume_download(app: AppHandle, mgr: State<'_, DownloadManager>, id: St
     let app_c = app.clone(); let id_c = id.clone();
     let task = tokio::spawn(async move { download_worker(app_c, mgr_clone, id_c).await; });
     { let mut d = mgr.downloads.lock().await; if let Some(e) = d.get_mut(&id) { e.task = Some(task); } }
+    persist_downloads(&mgr.inner()).await;
     Ok(())
 }
 
@@ -280,17 +305,107 @@ async fn cancel_download(id: String, mgr: State<'_, DownloadManager>) -> Result<
     let dn = { let d = mgr.downloads.lock().await; d.get(&id).map(|e| (e.info.save_dir.clone(), e.info.filename.clone())) };
     if let Some((dir, name)) = dn { let _ = fs::remove_file(part_path(&dir, &name)).await; let _ = fs::remove_file(meta_path(&dir, &name)).await; }
     mgr.downloads.lock().await.remove(&id);
+    persist_downloads(&mgr.inner()).await;
     Ok(())
 }
 
 #[tauri::command]
 async fn list_downloads(mgr: State<'_, DownloadManager>) -> Result<Vec<DownloadInfo>, String> {
-    let d = mgr.downloads.lock().await; Ok(d.values().map(|e| e.info.clone()).collect())
+    let mut d = mgr.downloads.lock().await;
+    for entry in d.values_mut() {
+        if entry.info.status == "completed" {
+            let fp = final_path(&entry.info.save_dir, &entry.info.filename);
+            entry.info.file_missing = !fp.exists();
+        }
+    }
+    Ok(d.values().map(|e| e.info.clone()).collect())
 }
 
 #[tauri::command]
 async fn remove_download(id: String, mgr: State<'_, DownloadManager>) -> Result<(), String> {
-    mgr.downloads.lock().await.remove(&id); Ok(())
+    mgr.downloads.lock().await.remove(&id);
+    persist_downloads(&mgr.inner()).await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn redownload_download(app: AppHandle, mgr: State<'_, DownloadManager>, id: String) -> Result<DownloadInfo, String> {
+    // Stop current task if running
+    let task = {
+        let mut d = mgr.downloads.lock().await;
+        if let Some(e) = d.get_mut(&id) { e.cancel_flag.store(true, Ordering::Relaxed); e.task.take() } else { None }
+    };
+    if let Some(t) = task { let _ = tokio::time::timeout(Duration::from_secs(5), t).await; }
+
+    let (save_dir, filename) = {
+        let d = mgr.downloads.lock().await;
+        match d.get(&id).map(|e| (e.info.save_dir.clone(), e.info.filename.clone())) {
+            Some(v) => v,
+            None => return Err("download not found".into()),
+        }
+    };
+
+    // Delete old .part, .meta.json, and final file
+    let _ = fs::remove_file(part_path(&save_dir, &filename)).await;
+    let _ = fs::remove_file(meta_path(&save_dir, &filename)).await;
+    let _ = fs::remove_file(final_path(&save_dir, &filename)).await;
+
+    // Reset info and spawn new worker
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    let mgr_clone = mgr.inner().clone();
+    {
+        let mut d = mgr.downloads.lock().await;
+        if let Some(e) = d.get_mut(&id) {
+            e.cancel_flag = cancel_flag.clone();
+           e.info.downloaded = 0;
+           e.info.total_size = 0;
+           e.info.status = "downloading".into();
+           e.info.error = None;
+           e.info.file_missing = false;
+       }
+   }
+   let app_c = app.clone(); let id_c = id.clone();
+   let task = tokio::spawn(async move { download_worker(app_c, mgr_clone, id_c).await; });
+   { let mut d = mgr.downloads.lock().await; if let Some(e) = d.get_mut(&id) { e.task = Some(task); } }
+
+    let info = { let d = mgr.downloads.lock().await; d.get(&id).map(|e| e.info.clone()) };
+    persist_downloads(&mgr.inner()).await;
+    Ok(info.unwrap())
+}
+
+#[tauri::command]
+async fn open_download_dir(save_dir: String, filename: String) -> Result<(), String> {
+    let dir = PathBuf::from(&save_dir);
+    let file_path = dir.join(&filename);
+
+    if file_path.exists() {
+        #[cfg(target_os = "macos")]
+        std::process::Command::new("open")
+            .args(["-R", &file_path.to_string_lossy()])
+            .spawn().map_err(|e| e.to_string())?;
+        #[cfg(target_os = "windows")]
+        std::process::Command::new("explorer")
+            .args([format!("/select,{}", file_path.to_string_lossy())])
+            .spawn().map_err(|e| e.to_string())?;
+        #[cfg(target_os = "linux")]
+        std::process::Command::new("xdg-open")
+            .arg(&save_dir)
+            .spawn().map_err(|e| e.to_string())?;
+    } else {
+        #[cfg(target_os = "macos")]
+        std::process::Command::new("open")
+            .arg(&save_dir)
+            .spawn().map_err(|e| e.to_string())?;
+        #[cfg(target_os = "windows")]
+        std::process::Command::new("explorer")
+            .arg(&save_dir)
+            .spawn().map_err(|e| e.to_string())?;
+        #[cfg(target_os = "linux")]
+        std::process::Command::new("xdg-open")
+            .arg(&save_dir)
+            .spawn().map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -308,9 +423,34 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(DownloadManager::new())
+        .setup(|app| {
+            let mgr = app.state::<DownloadManager>().inner().clone();
+            let path = persist_file_path();
+            let records: Vec<DownloadInfo> = match path {
+                Some(p) => std::fs::read_to_string(&p).ok()
+                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .unwrap_or_default(),
+                None => vec![],
+            };
+            let mut downloads = mgr.downloads.blocking_lock();
+           for mut info in records {
+               if info.status == "downloading" {
+                   info.status = "paused".into();
+               }
+                if info.status == "completed" {
+                    let fp = final_path(&info.save_dir, &info.filename);
+                    info.file_missing = !fp.exists();
+                }
+               let id = info.id.clone();
+                let cancel_flag = Arc::new(AtomicBool::new(false));
+                downloads.insert(id, DownloadEntry { info, cancel_flag, task: None });
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             start_download, pause_download, resume_download,
-            cancel_download, list_downloads, remove_download, get_default_download_dir,
+            cancel_download, list_downloads, remove_download, redownload_download,
+            open_download_dir, get_default_download_dir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

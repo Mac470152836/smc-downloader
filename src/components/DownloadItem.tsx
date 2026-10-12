@@ -9,6 +9,7 @@ interface DownloadInfo {
   status: string;
   error: string | null;
   created_at: string;
+  file_missing: boolean;
 }
 
 interface Props {
@@ -18,6 +19,8 @@ interface Props {
   onResume: (id: string) => void;
   onCancel: (id: string) => void;
   onRemove: (id: string) => void;
+  onOpenDir: (saveDir: string, filename: string) => void;
+  onRedownload: (id: string) => void;
   formatBytes: (bytes: number) => string;
   formatSpeed: (bytesPerSec: number) => string;
 }
@@ -29,6 +32,8 @@ export default function DownloadItem({
   onResume,
   onCancel,
   onRemove,
+  onOpenDir,
+  onRedownload,
   formatBytes,
   formatSpeed,
 }: Props) {
@@ -51,6 +56,13 @@ export default function DownloadItem({
           {info.filename}
         </span>
         <div className="item-actions">
+          <button
+            className="icon-btn"
+            onClick={() => onOpenDir(info.save_dir, info.filename)}
+            title="打开目录"
+          >
+            📂
+          </button>
           {(info.status === "downloading") && (
             <button
               className="icon-btn"
@@ -60,16 +72,25 @@ export default function DownloadItem({
               ⏸
             </button>
           )}
-          {(info.status === "paused" || info.status === "error") && (
+         {(info.status === "paused" || info.status === "error") && (
+           <button
+             className="icon-btn"
+             onClick={() => onResume(info.id)}
+             title="继续"
+           >
+             ▶
+           </button>
+         )}
+          {info.status !== "downloading" && (
             <button
               className="icon-btn"
-              onClick={() => onResume(info.id)}
-              title="继续"
+              onClick={() => onRedownload(info.id)}
+              title="重新下载"
             >
-              ▶
+              🔄
             </button>
           )}
-          {info.status !== "completed" && (
+         {info.status !== "completed" && (
             <button
               className="icon-btn danger"
               onClick={() => onCancel(info.id)}
@@ -109,6 +130,9 @@ export default function DownloadItem({
           {info.status === "error" && info.error ? ` · ${info.error}` : ""}
         </span>
       </div>
+      {info.file_missing && (
+        <div className="file-missing-badge">⚠ 文件已删除</div>
+      )}
     </div>
   );
 }

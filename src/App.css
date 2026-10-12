@@ -16,6 +16,72 @@
 }
 .header .logo { font-size: 20px; }
 
+/* ── tips button ────────────────────── */
+.tips-btn {
+  margin-left: auto;
+  background: linear-gradient(135deg, #4f8cff, #6c5ce7);
+  border: none;
+  border-radius: 8px;
+  padding: 6px 14px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: opacity 0.15s;
+}
+.tips-btn:hover { opacity: 0.88; }
+
+/* ── tips panel ─────────────────────── */
+.tips-panel {
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.tips-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 15px;
+  font-weight: 600;
+}
+.tips-close {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 16px;
+  padding: 0 4px;
+}
+.tips-close:hover { color: var(--danger); }
+.tips-desc { font-size: 13px; color: var(--text-dim); line-height: 1.5; }
+.tips-desc code {
+  background: var(--bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+.tips-example { display: flex; flex-direction: column; gap: 4px; }
+.tips-label { font-size: 12px; color: var(--text-dim); font-weight: 500; }
+.tips-code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+  line-height: 1.5;
+}
+.tips-hint { font-size: 12px; color: var(--text-dim); }
+
 /* ── new-download form ──────────────── */
 .form-section {
   background: var(--surface);
@@ -125,3 +191,13 @@
 .item-meta .status-badge.error { color: var(--danger); }
 .item-meta .status-badge.paused { color: var(--warning); }
 .item-meta .status-badge.downloading { color: var(--accent); }
+
+.file-missing-badge {
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 2px 8px;
+  background: rgba(255, 69, 58, 0.1);
+  border-radius: 4px;
+  align-self: flex-start;
+}
